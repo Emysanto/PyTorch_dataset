@@ -1,0 +1,72 @@
+!pip install torch torchvision
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torch.nn.functional as F
+from torchvision import transforms
+from torch.utils.data import DataLoader, random_split
+import time
+from torchvision.datasets import FashionMNIST
+# Define the neural network model
+class Net(nn.Module):
+    def __init__(self):
+        super(Net, self).__init__()
+        self.fc1 = nn.Linear(28*28, 64)
+        self.fc2 = nn.Linear(64, 32)
+        self.fc3 = nn.Linear(32, 10)
+
+    def forward(self, x):
+        x = x.view(-1, 28*28)
+        x = F.relu(self.fc1(x))
+        x = F.relu(self.fc2(x))
+        x = self.fc3(x)
+        return x
+# Load the dataset and split it among clients
+def load_data(num_clients):
+    transform = transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])
+    dataset = FashionMNIST('./data', train=True, download=True, transform=transform) # Download is already set to True here
+    client_datasets = random_split(dataset, [len(dataset)//num_clients]*num_clients)
+    return client_datasets
+
+# Test dataset loader
+test_loader = DataLoader(
+    FashionMNIST('./data', train=False, download=True, # Added download=True here
+                         transform=transforms.Compose([transforms.ToTensor(), transforms.Normalize((0.5,), (0.5,))])),
+    batch_size=1000,
+    shuffle=True
+)
+# Train a single client model
+def train(client_model, train_loader, optimizer, criterion, epochs=5):
+    client_model.train()
+    for epoch in range(epochs):
+        for batch_idx, (data, target) in enumerate(train_loader):#his loop iterates through the training data in batches
+            data, target = data.to(device), target.to(device)
+            optimizer.zero_grad()
+            output = client_model(data)
+            loss = criterion(output, target)
+            loss.backward()
+            optimizer.step()
+
+# Aggregate the models' weights
+def average_weights(global_model, client_models):
+    global_dict = global_model.state_dict() #current wgt 
+    for key in global_dict.keys():
+        global_dict[key] = torch.stack(
+            [client_models[i].state_dict()[key].float() for i in range(len(client_models))], 0).mean(0)
+    global_model.load_state_dict(global_dict)
+    return global_model
+
+# Test the global model
+def test(global_model, test_loader):
+    global_model.eval()
+    test_loss = 0
+    correct = 0
+    with torch.no_grad():
+        for data, target in test_loader:
+            data, target = data.to(device), target.to(device)
+            output = global_model(data)
+            test_loss += F.cross_entropy(output, target, reduction='sum').item()
+            pred = output.argmax(dim=1, keepdim=True)
+            correct += pred.eq(target.view_as(pred)).sum().item()
+    test_loss /= len(test_loader.dataset)
+    print(f'\nTest set: Average loss: {test_loss:.4f}, Accuracy: {correct}/{len(test_loader.dataset)} ({100. * correct / len(test_loader.dataset):.0f}%)\n') 
